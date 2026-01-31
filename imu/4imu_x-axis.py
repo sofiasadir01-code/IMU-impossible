@@ -12,7 +12,6 @@ Assumed hardware (based on repo context):
 Output:
 - Prints X-axis acceleration (m/s^2) for each IMU.
 - Optional +X/-X calibration saved to imu_x_calibration.json.
-- Optional per-IMU gyro/mag readings and Kalman-filtered roll/pitch/yaw.
 
 Requirements:
 - pip3 install smbus2
@@ -21,11 +20,10 @@ Requirements:
 
 import argparse
 import json
-import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 
 from smbus2 import SMBus, i2c_msg
 
@@ -49,6 +47,14 @@ ACCEL_LSB_PER_G_16G = 2048.0
 GYRO_LSB_PER_DPS_250 = 131.0
 G_MPS2 = 9.81
 DEG2RAD = math.pi / 180.0
+
+CALIBRATION_PATH = Path(__file__).with_name("imu_x_calibration.json")
+
+
+@dataclass
+class XCalibration:
+    offset: float = 0.0
+    scale: float = 1.0
 
 CALIBRATION_PATH = Path(__file__).with_name("imu_x_calibration.json")
 
@@ -263,7 +269,7 @@ def read_all_x(imus: Dict[int, MPU9050]) -> Dict[int, float]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read X-axis acceleration from four MPU9250 IMUs."
+        description="Read X-axis acceleration from four MPU9050 IMUs."
     )
     parser.add_argument(
         "--calibrate-x",
@@ -275,11 +281,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=200,
         help="Samples to average per calibration pose (default: 200).",
-    )
-    parser.add_argument(
-        "--disable-mag",
-        action="store_true",
-        help="Disable AK8963 magnetometer reads (enabled by default for MPU9250).",
     )
     return parser.parse_args()
 
@@ -356,43 +357,26 @@ def main() -> None:
         except Exception as exc:
             raise SystemExit(f"Mux init failed at 0x{TCA_ADDR:02X}: {exc}")
 
-        imus = init_imus(bus, mux, not args.disable_mag)
+        imus = init_imus(bus, mux)
         calibration = load_calibration()
-        kalman_filters = {ch: KalmanRPY() for ch in imus}
         if args.calibrate_x:
             calibration = calibrate_x(imus, args.samples)
             save_calibration(calibration)
             print(f"Saved calibration to {CALIBRATION_PATH}")
             return
-        t_prev = time.perf_counter()
         while True:
-            t_now = time.perf_counter()
-            dt = max(0.001, t_now - t_prev)
-            t_prev = t_now
-            lines = []
-            for ch in sorted(imus):
-                try:
-                    ax, ay, az = imus[ch].read_accel_mps2()
-                    gx, gy, gz = imus[ch].read_gyro_rad()
-                    mx, my, mz = imus[ch].read_mag_ut()
-                except Exception as exc:
-                    print(f"Read error IMU{ch}: {exc}")
-                    time.sleep(0.05)
-                    continue
-                cal = calibration.get(ch, XCalibration())
-                ax = (ax - cal.offset) * cal.scale
-                roll_meas, pitch_meas = accel_to_roll_pitch_deg((ax, ay, az))
-                yaw_meas = mag_to_yaw_deg((mx, my, mz), roll_meas, pitch_meas)
-                gyro_dps = (gx / DEG2RAD, gy / DEG2RAD, gz / DEG2RAD)
-                roll_k, pitch_k, yaw_k = kalman_filters[ch].update(
-                    roll_meas, pitch_meas, yaw_meas, gyro_dps, dt
-                )
-                lines.append(
-                    f"IMU{ch}: ax={ax:+7.3f} m/s^2  "
-                    f"kalman_rpy=[{roll_k:+6.1f},{pitch_k:+6.1f},{yaw_k:+6.1f}] deg"
-                )
-            if lines:
-                print("  ".join(lines))
+            try:
+                values = read_all_x(imus)
+                values = apply_calibration(values, calibration)
+            except Exception as exc:
+                print(f"Read error: {exc}")
+                time.sleep(0.05)
+                continue
+
+            line = "  ".join(
+                f"IMU{ch}: ax={values[ch]:+7.3f} m/s^2" for ch in sorted(values)
+            )
+            print(line)
             time.sleep(0.05)
 
 
