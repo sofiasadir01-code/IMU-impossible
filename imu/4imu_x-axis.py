@@ -21,7 +21,6 @@ Requirements:
 import argparse
 import json
 import time
-from typing import Dict, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
@@ -68,9 +67,42 @@ def i2c_read_bytes(bus: SMBus, addr: int, reg: int, n: int, retries: int = 3) ->
             time.sleep(0.005)
     raise IOError(f"I2C read failed addr=0x{addr:02X} reg=0x{reg:02X} n={n}")
 
+
 def be16_to_i16(b_hi: int, b_lo: int) -> int:
     v = (b_hi << 8) | b_lo
-@@ -93,53 +106,140 @@ class MPU9050:
+    return v - 65536 if v & 0x8000 else v
+
+
+class TCA9548A:
+    def __init__(self, bus: SMBus, addr: int = TCA_ADDR):
+        self.bus = bus
+        self.addr = addr
+        self.current = None
+
+    def select(self, ch: int) -> None:
+        if ch < 0 or ch > 7:
+            raise ValueError("TCA channel must be 0..7")
+        if self.current == ch:
+            return
+        self.bus.write_byte(self.addr, 1 << ch)
+        self.current = ch
+        time.sleep(0.001)
+
+
+class MPU9050:
+    def __init__(self, bus: SMBus, mux: TCA9548A, channel: int):
+        self.bus = bus
+        self.mux = mux
+        self.channel = channel
+        self.ready = False
+
+    def init_device(self) -> None:
+        self.mux.select(self.channel)
+        i2c_write_byte(self.bus, MPU_ADDR, REG_PWR_MGMT_1, 0x00)
+        time.sleep(0.05)
+        i2c_write_byte(self.bus, MPU_ADDR, REG_ACCEL_CONFIG, 0x00)
+        time.sleep(0.01)
+        self.ready = True
 
     def read_accel_x_mps2(self) -> float:
         if not self.ready:
