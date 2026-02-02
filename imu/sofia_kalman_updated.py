@@ -14,7 +14,7 @@ import smbus
 from collections import deque  
 from scipy.stats import chi2
 
-from imusensor.MPU9250 import MPU9250
+from imusensor.MPU9250.MPU9250 import MPU9250
 from imusensor.filters import kalman
 
 # ============================
